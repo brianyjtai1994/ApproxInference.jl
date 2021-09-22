@@ -2,3 +2,6 @@ name = "ApproxInference"
 uuid = "f61ef0c9-d2b1-4370-9f73-58bf29aadc66"
 authors = ["yctai <brianyjtai1994@gmail.com>"]
 version = "0.1.0"
+
+[deps]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
