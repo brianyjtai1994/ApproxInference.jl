@@ -9,11 +9,13 @@ const MatO  = AbstractMatrix # Output Matrix
 const MatB  = AbstractMatrix # Buffer Matrix
 const MatIO = AbstractMatrix # In/Out Matrix
 
-const BLAS_THREAD_NUM = 4
-
 import LinearAlgebra: BLAS
 
-BLAS.set_num_threads(BLAS_THREAD_NUM)
+if haskey(ENV, "BLAS_THREAD_NUM")
+    BLAS.set_num_threads(parse(Int, ENV["BLAS_THREAD_NUM"]))
+else
+    BLAS.set_num_threads(4)
+end
 
 include("./statistics.jl")
 
