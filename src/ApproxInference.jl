@@ -10,6 +10,7 @@ const MatB  = AbstractMatrix # Buffer Matrix
 const MatIO = AbstractMatrix # In/Out Matrix
 
 import LinearAlgebra: BLAS
+import LinearAlgebra: LAPACK
 
 if haskey(ENV, "BLAS_THREAD_NUM")
     BLAS.set_num_threads(parse(Int, ENV["BLAS_THREAD_NUM"]))
@@ -17,6 +18,9 @@ else
     BLAS.set_num_threads(4)
 end
 
+include("./linalg.jl")
+include("./macros.jl")
+include("./lmpack.jl")
 include("./statistics.jl")
 
 end # module
