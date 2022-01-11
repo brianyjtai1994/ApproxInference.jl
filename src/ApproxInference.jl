@@ -20,7 +20,18 @@ end
 
 include("./linalg.jl")
 include("./macros.jl")
-include("./lmpack.jl")
 include("./statistics.jl")
+
+function optimize! end
+
+include("./lmpack.jl")
+
+function optimizer(nd::Int, ny::Int; method::String="lm")
+    if method ≡ "lm" || method ≡ "LM" || method ≡ "LevenbergMarquardt" || method ≡ "Levenberg-Marquardt"
+        return LevenbergMarquardtOptimizer(nd, ny)
+    end
+end
+
+export optimize!, optimizer
 
 end # module

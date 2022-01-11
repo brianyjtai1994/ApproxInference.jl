@@ -1,13 +1,26 @@
-export get_residual!, get_jacobian!
+export @objective, get_residual!, get_jacobian!
+
+abstract type AbstractObjective <: Function end
+
+macro objective(e::Expr)
+    e.head ≡ :struct || error("Objective funtion should be defined as `struct ... end`.")
+    @inbounds a = e.args[2]
+    if typeof(a) <: Symbol
+        @inbounds e.args[2] = Expr(:<:, a, :AbstractObjective)
+    else
+        @inbounds a.args[2] = :AbstractObjective
+    end
+    return e
+end
 
 function get_residual! end
 function get_jacobian! end
 
 # Get residuals: (predicted - observed) data
-lm_get_residual!(r::VecIO, μ::VecI, f::Function) = get_residual!(r, μ, f)
+lm_get_residual!(r::VecIO, μ::VecI, f::AbstractObjective) = get_residual!(r, μ, f)
 
 # Get jacobian matrix of predicted model
-lm_get_jacobian!(J::MatIO, μ::VecI, f::Function) = get_jacobian!(J, μ, f)
+lm_get_jacobian!(J::MatIO, μ::VecI, f::AbstractObjective) = get_jacobian!(J, μ, f)
 
 # Get approximated hessian of least-square residuals
 function lm_get_apprhess!(H::MatIO, β::Real, J::MatI)
@@ -47,27 +60,27 @@ function lm_get_blastrsv!(d::VecIO, A::MatIO)
     return nothing
 end
 
-struct LMOptimizer
+struct LevenbergMarquardtOptimizer
     @def prop Vector{Float64} rs rt μs μt dμ δμ
-    @def prop Matrix{Float64} Js Jt As Hs Hf
+    @def prop Matrix{Float64} Js ΛJ Hs Hf
     @def prop Int nd ny
 
-    function LMOptimizer(nd::Int, ny::Int)
+    function LevenbergMarquardtOptimizer(nd::Int, ny::Int)
         @def vars Vector{Float64}(undef, ny) rs rt
         @def vars Vector{Float64}(undef, nd) μs μt dμ δμ
-        @def vars Matrix{Float64}(undef, ny, nd) Js Jt As
+        @def vars Matrix{Float64}(undef, ny, nd) Js ΛJ
         @def vars Matrix{Float64}(undef, nd, nd) Hs Hf
-        return new(rs, rt, μs, μt, dμ, δμ, Js, Jt, As, Hs, Hf, nd, ny)
+        return new(rs, rt, μs, μt, dμ, δμ, Js, ΛJ, Hs, Hf, nd, ny)
     end
 end
 
 # *t := temp one of *
 # *s := solution of *
 # Hf := hessian for factorization
-function lm_get_optimize!(o::LMOptimizer, fn::Function, μ0::VecI, βy::Real; τ::Real=1e-3, h::Real=0.1, itmax::Int=100)
+function lm_get_optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, βy::Real, τ::Real, h::Real, itmax::Int, lm::LevenbergMarquardtOptimizer)
     #### Allocations ####
-    @get o nd ny rs rt μs μt dμ δμ
-    @get o Js Jt Hs Hf
+    @get lm nd ny rs rt μs μt dμ δμ
+    @get lm Js Hs Hf
     #### Initialization
     ih1 = inv(h)
     ih2 = ih1 * ih1
@@ -132,13 +145,13 @@ function lm_get_optimize!(o::LMOptimizer, fn::Function, μ0::VecI, βy::Real; τ
             a *= b; b *= 2.0
         end
     end
-    return nothing
+    unsafe_copy!(xs, μs); return xs
 end
 
-function lm_get_optimize!(o::LMOptimizer, fn::Function, μ0::VecI, Λy::MatI; τ::Real=1e-3, h::Real=0.1, itmax::Int=100)
+function lm_get_optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, Λy::MatI, τ::Real, h::Real, itmax::Int, lm::LevenbergMarquardtOptimizer)
     #### Allocations ####
-    @get o nd ny rs rt μs μt dμ δμ
-    @get o Js Jt As Hs Hf
+    @get lm nd ny rs rt μs μt dμ δμ
+    @get lm Js ΛJ Hs Hf
     #### Initialization
     ih1 = inv(h)
     ih2 = ih1 * ih1
@@ -147,7 +160,7 @@ function lm_get_optimize!(o::LMOptimizer, fn::Function, μ0::VecI, Λy::MatI; τ
     #### Compute precision matrix
     lm_get_residual!(rs, μs, fn)
     lm_get_jacobian!(Js, μs, fn)
-    lm_get_apprhess!(Hs, Λy, Js, As) # As = Λy * Js
+    lm_get_apprhess!(Hs, Λy, Js, ΛJ) # ΛJ = Λy * Js
     # Controlling Parameters of Trust Region
     a = τ * diagmax(Hs, nd); b = 2.0
     #### Compute free energy
@@ -164,7 +177,7 @@ function lm_get_optimize!(o::LMOptimizer, fn::Function, μ0::VecI, Λy::MatI; τ
         end
         cholesky_state = lm_get_cholesky!(Hf)
         # Levenberg-Marquardt step by 1st order linearization
-        lm_get_gradient!(dμ, As, rs)
+        lm_get_gradient!(dμ, ΛJ, rs)
         lm_get_blastrsv!(dμ, Hf)
         # Finite-difference of 2nd order directional derivative
         @simd for i in toN
@@ -173,7 +186,7 @@ function lm_get_optimize!(o::LMOptimizer, fn::Function, μ0::VecI, Λy::MatI; τ
         lm_get_residual!(rt, μt, fn)
         lm_get_gradient!(rt, rs, Js, dμ, ih1, ih2)
         # Geodesic acceleration step by 2nd order linearization
-        lm_get_gradient!(δμ, As, rt)
+        lm_get_gradient!(δμ, ΛJ, rt)
         lm_get_blastrsv!(δμ, Hf)
         gratio = 2.0 * nrm2(δμ) / nrm2(dμ)
         gratio > 0.75 && (a *= b; b *= 2.0; continue)
@@ -194,7 +207,7 @@ function lm_get_optimize!(o::LMOptimizer, fn::Function, μ0::VecI, Λy::MatI; τ
             unsafe_copy!(μs, μt)
             (maximum(δμ) < 1e-15 || Δ < 1e-10) && break # Check localized convergence
             lm_get_jacobian!(Js, μs, fn)
-            lm_get_apprhess!(Hs, Λy, Js, As)
+            lm_get_apprhess!(Hs, Λy, Js, ΛJ)
             unsafe_copy!(rs, rt)
             a = ρ < 0.9367902323681495 ? a * (1.0 - cubic(2.0 * ρ - 1.0)) : a / 3.0
             b = 2.0
@@ -203,5 +216,8 @@ function lm_get_optimize!(o::LMOptimizer, fn::Function, μ0::VecI, Λy::MatI; τ
             a *= b; b *= 2.0
         end
     end
-    return nothing
+    unsafe_copy!(xs, μs); return xs
 end
+
+optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, βy::Real, lm::LevenbergMarquardtOptimizer; τ::Real=1e-3, h::Real=0.1, itmax::Int=100) = lm_get_optimize!(xs, fn, μ0, βy, τ, h, itmax, lm)
+optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, Λy::MatI, lm::LevenbergMarquardtOptimizer; τ::Real=1e-3, h::Real=0.1, itmax::Int=100) = lm_get_optimize!(xs, fn, μ0, Λy, τ, h, itmax, lm)
