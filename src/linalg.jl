@@ -89,7 +89,7 @@ function dot(x::VecI, y::VecI, n::Int)
     r = 0.0
     m = mod(n, 5)
     if m ≠ 0
-        for i in 1:m
+        @inbounds for i in 1:m
             r += x[i] * y[i]
         end
         n < 5 && return r

@@ -22,7 +22,22 @@ include("./linalg.jl")
 include("./macros.jl")
 include("./statistics.jl")
 
-function optimize! end
+abstract type AbstractObjective <: Function end
+
+macro objective(e::Expr)
+    e.head ≡ :struct || error("Objective funtion should be defined as `struct ... end`.")
+    @inbounds a = e.args[2]
+    if typeof(a) <: Symbol
+        @inbounds e.args[2] = Expr(:<:, a, :AbstractObjective)
+    else
+        @inbounds a.args[2] = :AbstractObjective
+    end
+    return e
+end
+
+function optimize!     end
+function get_residual! end
+function get_jacobian! end
 
 include("./lmpack.jl")
 
@@ -32,6 +47,6 @@ function optimizer(nd::Int, ny::Int; method::String="lm")
     end
 end
 
-export optimize!, optimizer
+export @objective, optimize!, get_residual!, get_jacobian!, optimizer
 
 end # module

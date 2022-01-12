@@ -1,23 +1,25 @@
-export @objective, get_residual!, get_jacobian!
-
-abstract type AbstractObjective <: Function end
-
-macro objective(e::Expr)
-    e.head ≡ :struct || error("Objective funtion should be defined as `struct ... end`.")
-    @inbounds a = e.args[2]
-    if typeof(a) <: Symbol
-        @inbounds e.args[2] = Expr(:<:, a, :AbstractObjective)
-    else
-        @inbounds a.args[2] = :AbstractObjective
-    end
-    return e
-end
-
-function get_residual! end
-function get_jacobian! end
-
 # Get residuals: (predicted - observed) data
 lm_get_residual!(r::VecIO, μ::VecI, f::AbstractObjective) = get_residual!(r, μ, f)
+
+# Get square sum of residuals
+lm_get_squaresum(β::Real, r::VecI, n::Int) = 0.5 * β * dot(r, r, n)
+lm_get_squaresum(Λ::MatI, r::VecI, n::Int) = 0.5 * dot(r, n, Λ, r, n)
+
+function lm_get_squaresum(λ::VecI, r::VecI, n::Int)
+    R = 0.0
+    m = mod(n, 4)
+    if m ≠ 0
+        @inbounds for i in 1:m
+            R += λ[i] * abs2(r[i])
+        end
+        n < 4 && return R
+    end
+    m += 1
+    @inbounds for i in m:4:n
+        R += λ[i] * abs2(r[i]) + λ[i+1] * abs2(r[i+1]) + λ[i+2] * abs2(r[i+2]) + λ[i+3] * abs2(r[i+3])
+    end
+    return 0.5 * R
+end
 
 # Get jacobian matrix of predicted model
 lm_get_jacobian!(J::MatIO, μ::VecI, f::AbstractObjective) = get_jacobian!(J, μ, f)
@@ -28,6 +30,16 @@ function lm_get_apprhess!(H::MatIO, β::Real, J::MatI)
     @inbounds for j in axes(H, 1), i in 1:j-1
         H[j,i] = H[i,j]
     end
+    return nothing
+end
+
+function lm_get_apprhess!(H::MatIO, λy::VecI, J::MatI, ΛJ::MatB)
+    for j in axes(J, 2)
+        @simd for i in eachindex(λy)
+            @inbounds ΛJ[i,j] = λy[i] * J[i,j]
+        end
+    end
+    BLAS.gemm!('T', 'N', 1.0, ΛJ, J, 0.0,  H) # H ← JΛ * J
     return nothing
 end
 
@@ -93,7 +105,7 @@ function lm_get_optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, βy::Real
     # Controlling Parameters of Trust Region
     a = τ * diagmax(Hs, nd); b = 2.0
     #### Compute free energy
-    Cnow = 0.5 * βy * dot(rs, rs, ny)
+    Cnow = lm_get_squaresum(βy, rs, ny)
     #### Iteration
     it = 0
     while it < itmax
@@ -128,7 +140,7 @@ function lm_get_optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, βy::Real
             @inbounds μt[i] = μs[i] + dμ[i]
         end
         lm_get_residual!(rt, μt, fn)
-        Cnew = 0.5 * βy * dot(rt, rt, ny)
+        Cnew = lm_get_squaresum(βy, rt, ny)
 
         Δ = Cnow - Cnew; ρ = Δ / LinApprox
         if ρ > 0.0
@@ -148,7 +160,7 @@ function lm_get_optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, βy::Real
     unsafe_copy!(xs, μs); return xs
 end
 
-function lm_get_optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, Λy::MatI, τ::Real, h::Real, itmax::Int, lm::LevenbergMarquardtOptimizer)
+function lm_get_optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, Λy::Union{VecI, MatI}, τ::Real, h::Real, itmax::Int, lm::LevenbergMarquardtOptimizer)
     #### Allocations ####
     @get lm nd ny rs rt μs μt dμ δμ
     @get lm Js ΛJ Hs Hf
@@ -164,7 +176,7 @@ function lm_get_optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, Λy::MatI
     # Controlling Parameters of Trust Region
     a = τ * diagmax(Hs, nd); b = 2.0
     #### Compute free energy
-    Cnow = 0.5 * dot(rs, ny, Λy, rs, ny)
+    Cnow = lm_get_squaresum(Λy, rs, ny)
     #### Iteration
     it = 0
     while it < itmax
@@ -199,7 +211,7 @@ function lm_get_optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, Λy::MatI
             @inbounds μt[i] = μs[i] + dμ[i]
         end
         lm_get_residual!(rt, μt, fn)
-        Cnew = 0.5 * dot(rt, ny, Λy, rt, ny)
+        Cnew = lm_get_squaresum(Λy, rt, ny)
 
         Δ = Cnow - Cnew; ρ = Δ / LinApprox
         if ρ > 0.0
@@ -219,5 +231,4 @@ function lm_get_optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, Λy::MatI
     unsafe_copy!(xs, μs); return xs
 end
 
-optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, βy::Real, lm::LevenbergMarquardtOptimizer; τ::Real=1e-3, h::Real=0.1, itmax::Int=100) = lm_get_optimize!(xs, fn, μ0, βy, τ, h, itmax, lm)
-optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, Λy::MatI, lm::LevenbergMarquardtOptimizer; τ::Real=1e-3, h::Real=0.1, itmax::Int=100) = lm_get_optimize!(xs, fn, μ0, Λy, τ, h, itmax, lm)
+optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, Λy::Union{Real, VecI, MatI}, lm::LevenbergMarquardtOptimizer; τ::Real=1e-3, h::Real=0.1, itmax::Int=100) = lm_get_optimize!(xs, fn, μ0, Λy, τ, h, itmax, lm)
