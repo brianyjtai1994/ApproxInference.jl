@@ -6,10 +6,6 @@ const MatI  = AbstractMatrix # Input  Matrix
 const MatO  = AbstractMatrix # Output Matrix
 const MatB  = AbstractMatrix # Buffer Matrix
 const MatIO = AbstractMatrix # In/Out Matrix
-const ArrI  = AbstractArray  # Input  Array
-const ArrO  = AbstractArray  # Output Array
-const ArrB  = AbstractArray  # Buffer Array
-const ArrIO = AbstractArray  # In/Out Array
 
 import LinearAlgebra: BLAS
 BLAS.set_num_threads(4)
@@ -132,7 +128,7 @@ function main(μ0::VecI, Λy::Union{VecI, MatI}, τ::Real, h::Real, itmax::Int)
         # (Levenberg-Marquardt velocity) + (Geodesic acceleration)
         BLAS.axpy!(1.0, δμ, dμ) # dμ ← dμ + δμ
         # Compute predicted gain of the least square cost by linear approximation
-        LinApprox = 0.5 * dot(dμ, nd, Hs, dμ, nd) + λ * dot(dμ, dμ, nd)
+        LinApprox = lm_get_squaresum(Hs, dμ, nd) + λ * dot(dμ, dμ, nd)
         # Compute gain ratio
         @simd for i in toN
             @inbounds μt[i] = μs[i] + dμ[i]
@@ -193,7 +189,7 @@ function main(μ0::VecI, Λy::Union{VecI, MatI}, τ::Real, h::Real, itmax::Int)
 end
 
 function main()
-    pars = [-1.0, 5.5]
+    parμ = [-1.0, 5.5]
     βmat = zeros(Float64, 6, 6)
 
     for j in axes(βmat, 2)
@@ -202,6 +198,6 @@ function main()
         end
     end
 
-    main(pars, βmat, 1e-3, 0.1, 100)
+    main(parμ, βmat, 1e-3, 0.1, 100)
     return nothing
 end

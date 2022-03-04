@@ -39,7 +39,7 @@ function lm_get_apprhess!(H::MatIO, λy::VecI, J::MatI, ΛJ::MatB)
             @inbounds ΛJ[i,j] = λy[i] * J[i,j]
         end
     end
-    BLAS.gemm!('T', 'N', 1.0, ΛJ, J, 0.0,  H) # H ← JΛ * J
+    BLAS.gemm!('T', 'N', 1.0, ΛJ, J, 0.0, H) # H ← JΛ * J
     return nothing
 end
 
@@ -81,14 +81,13 @@ struct LevenbergMarquardtOptimizer
         @def vars Vector{Float64}(undef, ny) rs rt
         @def vars Vector{Float64}(undef, nd) μs μt dμ δμ
         @def vars Matrix{Float64}(undef, ny, nd) Js ΛJ
-        @def vars Matrix{Float64}(undef, nd, nd) Hs Hf
+        @def vars Matrix{Float64}(undef, nd, nd) Hs Hf # Hessian (solution, factorization)
         return new(rs, rt, μs, μt, dμ, δμ, Js, ΛJ, Hs, Hf, nd, ny)
     end
 end
 
 # *t := temp one of *
 # *s := solution of *
-# Hf := hessian for factorization
 function lm_get_optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, βy::Real, τ::Real, h::Real, itmax::Int, lm::LevenbergMarquardtOptimizer)
     #### Allocations ####
     @get lm nd ny rs rt μs μt dμ δμ
@@ -102,9 +101,9 @@ function lm_get_optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, βy::Real
     lm_get_residual!(rs, μs, fn)
     lm_get_jacobian!(Js, μs, fn)
     lm_get_apprhess!(Hs, βy, Js)
-    # Controlling Parameters of Trust Region
+    # Controlling parameters of trust region
     a = τ * diagmax(Hs, nd); b = 2.0
-    #### Compute free energy
+    #### Compute least square cost
     Cnow = lm_get_squaresum(βy, rs, ny)
     #### Iteration
     it = 0
@@ -134,7 +133,7 @@ function lm_get_optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, βy::Real
         # (Levenberg-Marquardt velocity) + (Geodesic acceleration)
         BLAS.axpy!(1.0, δμ, dμ) # dμ ← dμ + δμ
         # Compute predicted gain of the least square cost by linear approximation
-        LinApprox = 0.5 * dot(dμ, nd, Hs, dμ, nd) + λ * dot(dμ, dμ, nd)
+        LinApprox = lm_get_squaresum(Hs, dμ, nd) + λ * dot(dμ, dμ, nd)
         # Compute gain ratio
         @simd for i in toN
             @inbounds μt[i] = μs[i] + dμ[i]
@@ -173,9 +172,9 @@ function lm_get_optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, Λy::Unio
     lm_get_residual!(rs, μs, fn)
     lm_get_jacobian!(Js, μs, fn)
     lm_get_apprhess!(Hs, Λy, Js, ΛJ) # ΛJ = Λy * Js
-    # Controlling Parameters of Trust Region
+    # Controlling parameters of trust region
     a = τ * diagmax(Hs, nd); b = 2.0
-    #### Compute free energy
+    #### Compute least square cost
     Cnow = lm_get_squaresum(Λy, rs, ny)
     #### Iteration
     it = 0
@@ -205,7 +204,7 @@ function lm_get_optimize!(xs::VecIO, fn::AbstractObjective, μ0::VecI, Λy::Unio
         # (Levenberg-Marquardt velocity) + (Geodesic acceleration)
         BLAS.axpy!(1.0, δμ, dμ) # dμ ← dμ + δμ
         # Compute predicted gain of the least square cost by linear approximation
-        LinApprox = 0.5 * dot(dμ, nd, Hs, dμ, nd) + λ * dot(dμ, dμ, nd)
+        LinApprox = lm_get_squaresum(Hs, dμ, nd) + λ * dot(dμ, dμ, nd)
         # Compute gain ratio
         @simd for i in toN
             @inbounds μt[i] = μs[i] + dμ[i]

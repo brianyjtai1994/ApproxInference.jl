@@ -27,10 +27,10 @@ abstract type AbstractObjective <: Function end
 macro objective(e::Expr)
     e.head ≡ :struct || error("Objective funtion should be defined as `struct ... end`.")
     @inbounds a = e.args[2]
-    if typeof(a) <: Symbol
-        @inbounds e.args[2] = Expr(:<:, a, :AbstractObjective)
-    else
+    if a isa Expr && a.head ≡ :<:
         @inbounds a.args[2] = :AbstractObjective
+    else
+        @inbounds e.args[2] = Expr(:<:, a, :AbstractObjective)
     end
     return e
 end
@@ -40,10 +40,14 @@ function get_residual! end
 function get_jacobian! end
 
 include("./lmpack.jl")
+include("./vipack.jl")
 
+optimizer(; nd::Int=1, ny::Int=1, args...) = optimizer(nd, ny; args...)
 function optimizer(nd::Int, ny::Int; method::String="lm")
     if method ≡ "lm" || method ≡ "LM" || method ≡ "LevenbergMarquardt" || method ≡ "Levenberg-Marquardt"
         return LevenbergMarquardtOptimizer(nd, ny)
+    elseif method ≡ "vi" || method ≡ "VI" || method ≡ "VariationalInference" || method ≡ "Variational-Inference"
+        return VariationalInferenceOptimizer(nd, ny)
     end
 end
 
