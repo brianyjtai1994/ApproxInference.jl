@@ -5,7 +5,7 @@ const VecIO = AbstractVector # In/Out Vector
 const MatI  = AbstractMatrix # Input  Matrix
 const MatIO = AbstractMatrix # In/Out Matrix
 
-print_head(s::String) = println("\033[1m\033[32mTesting Task\033[0m \033[33m$s\033[0m")
+print_head(s::String) = println("\033[1m\033[32mTesting Task\033[0m \033[1m\033[33m$s\033[0m")
 print_body(s::String) = println("             $s")
 
 ##############################
@@ -39,66 +39,8 @@ function ApproxInference.get_jacobian!(J::MatIO, θ::VecI, f::BoxBOD)
     return nothing
 end
 
-@testset "Levenberg-Marquardt: NIST Dataset (BoxBOD)" begin
-    print_head("Levenberg-Marquardt: NIST Dataset (BoxBOD)")
-
-    obj = optimizer(2, 6)
-    fun = BoxBOD()
-    par = [10.0, 5.5]
-    sol = Vector{Float64}(undef, 2)
-
-    βvec = zeros(Float64, 6)
-    βmat = zeros(Float64, 6, 6)
-
-    @simd for i in eachindex(βvec)
-        @inbounds βvec[i] = 1.0
-    end
-
-    for j in axes(βmat, 2)
-        @simd for i in axes(βmat, 1)
-            @inbounds βmat[i,j] = ifelse(i ≡ j, 1.0, 0.0)
-        end
-    end
-
-    ans = [213.809409, 0.54723748]
-
-    print_body(string("Precision Const.: ", optimize!(sol, fun, par, 1.0, obj)))
-    @inbounds for i in eachindex(ans)
-        @test sol[i] ≈ ans[i] rtol=1e-7
-    end
-
-    print_body(string("Precision Vector: ", optimize!(sol, fun, par, βvec, obj)))
-    @inbounds for i in eachindex(ans)
-        @test sol[i] ≈ ans[i] rtol=1e-7
-    end
-
-    print_body(string("Precision Matrix: ", optimize!(sol, fun, par, βmat, obj)))
-    @inbounds for i in eachindex(ans)
-        @test sol[i] ≈ ans[i] rtol=1e-7
-    end
-
-    @simd for i in eachindex(βvec)
-        @inbounds βvec[i] = 1.0 + 0.1 * (i-1)
-    end
-
-    for j in axes(βmat, 2)
-        @simd for i in axes(βmat, 1)
-            @inbounds βmat[i,j] = ifelse(i ≡ j, 1.0 + 0.1 * (i-1), 0.0)
-        end
-    end
-
-    @inbounds ans[1], ans[2] = 216.132114, 0.52157598
-
-    print_body(string("Precision Vector: ", optimize!(sol, fun, par, βvec, obj)))
-    @inbounds for i in eachindex(ans)
-        @test sol[i] ≈ ans[i] rtol=1e-7
-    end
-
-    print_body(string("Precision Matrix: ", optimize!(sol, fun, par, βmat, obj)))
-    @inbounds for i in eachindex(ans)
-        @test sol[i] ≈ ans[i] rtol=1e-7
-    end
-end
+include("./test-BoxBOD-LM.jl")
+include("./test-BoxBOD-VI.jl")
 
 ##############################
 #   NIST Dataset: Eckerle4   #
@@ -154,63 +96,5 @@ function ApproxInference.get_jacobian!(J::MatIO, θ::VecI, f::Eckerle4)
     return nothing
 end
 
-@testset "Levenberg-Marquardt: NIST Dataset (Eckerle4)" begin
-    print_head("Levenberg-Marquardt: NIST Dataset (Eckerle4)")
-
-    obj = optimizer(3, 35)
-    fun = Eckerle4()
-    par = [1.0, 10.0, 500.0]
-    sol = Vector{Float64}(undef, 3)
-
-    βvec = zeros(Float64, 35)
-    βmat = zeros(Float64, 35, 35)
-
-    @simd for i in eachindex(βvec)
-        @inbounds βvec[i] = 1.0
-    end
-
-    for j in axes(βmat, 2)
-        @simd for i in axes(βmat, 1)
-            @inbounds βmat[i,j] = ifelse(i ≡ j, 1.0, 0.0)
-        end
-    end
-
-    ans = [1.55438320, 4.08883470, 451.541216]
-
-    print_body(string("Precision Const.: ", optimize!(sol, fun, par, 1.0, obj)))
-    @inbounds for i in eachindex(ans)
-        @test sol[i] ≈ ans[i] rtol=1e-7
-    end
-
-    print_body(string("Precision Vector: ", optimize!(sol, fun, par, βvec, obj)))
-    @inbounds for i in eachindex(ans)
-        @test sol[i] ≈ ans[i] rtol=1e-7
-    end
-
-    print_body(string("Precision Matrix: ", optimize!(sol, fun, par, βmat, obj)))
-    @inbounds for i in eachindex(ans)
-        @test sol[i] ≈ ans[i] rtol=1e-7
-    end
-
-    @simd for i in eachindex(βvec)
-        @inbounds βvec[i] = 1.0 + 0.1 * (i-1)
-    end
-
-    for j in axes(βmat, 2)
-        @simd for i in axes(βmat, 1)
-            @inbounds βmat[i,j] = ifelse(i ≡ j, 1.0 + 0.1 * (i-1), 0.0)
-        end
-    end
-
-    @inbounds ans[1], ans[2], ans[3] = 1.55104362, 4.07147810, 451.543586
-
-    print_body(string("Precision Vector: ", optimize!(sol, fun, par, βvec, obj)))
-    @inbounds for i in eachindex(ans)
-        @test sol[i] ≈ ans[i]
-    end
-
-    print_body(string("Precision Matrix: ", optimize!(sol, fun, par, βmat, obj)))
-    @inbounds for i in eachindex(ans)
-        @test sol[i] ≈ ans[i]
-    end
-end
+include("./test-Eckerle4-LM.jl")
+include("./test-Eckerle4-VI.jl")
