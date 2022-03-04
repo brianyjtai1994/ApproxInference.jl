@@ -7,15 +7,18 @@ const MatO  = AbstractMatrix # Output Matrix
 const MatB  = AbstractMatrix # Buffer Matrix
 const MatIO = AbstractMatrix # In/Out Matrix
 
+using Printf
+
 import LinearAlgebra: BLAS
 BLAS.set_num_threads(4)
 
 import PyPlot as plt
 import ApproxInference
 import ApproxInference: @get, @objective, unsafe_copy!, diagmax, nrm2, dot, cubic,
-                        lm_get_residual!, lm_get_jacobian!, lm_get_apprhess!,
+                        lm_get_residual!, lm_get_jacobian!, vi_get_apprhess!,
                         lm_get_gradient!, lm_get_cholesky!, lm_get_blastrsv!,
-                        lm_get_squaresum, LevenbergMarquardtOptimizer
+                        lm_get_squaresum, vi_get_evidence!, vi_get_gradient!,
+                        VariationalInferenceOptimizer
 
 meshgrid(x::VecI{T}, y::VecI{T}) where T = Matrix{T}(undef, length(y), length(x))
 
@@ -79,41 +82,45 @@ function ApproxInference.get_jacobian!(J::MatIO, θ::VecI, f::BoxBOD)
     return nothing
 end
 
-function main(μ0::VecI, Λy::Union{VecI, MatI}, τ::Real, h::Real, itmax::Int)
+function main(fname::String, μ0::VecI, Λ0::MatI, Λy::Union{VecI, MatI}, τ::Real, h::Real, itmax::Int)
     fn = BoxBOD()
-    lm = LevenbergMarquardtOptimizer(2, 6)
+    vi = VariationalInferenceOptimizer(2, 6)
     x1 = Float64[]; @inbounds push!(x1, μ0[1])
     x2 = Float64[]; @inbounds push!(x2, μ0[2])
     #### Allocations ####
-    @get lm nd ny rs rt μs μt dμ δμ
-    @get lm Js ΛJ Hs Hf
+    @get vi nd ny rs rt μs μt dμ δμ Δμ
+    @get vi Js Jt ΛJ Λs Λt Λb Ft Fb
     #### Initialization
     ih1 = inv(h)
     ih2 = ih1 * ih1
     toN = eachindex(1:nd)
     unsafe_copy!(μs, μ0)
+    unsafe_copy!(Λs, Λ0)
     #### Compute precision matrix
     lm_get_residual!(rs, μs, fn)
     lm_get_jacobian!(Js, μs, fn)
-    lm_get_apprhess!(Hs, Λy, Js, ΛJ) # ΛJ = Λy * Js
-    # Controlling Parameters of Trust Region
-    a = τ * diagmax(Hs, nd); b = 2.0
+    vi_get_apprhess!(Λt, Λy, Js, Λ0, ΛJ) # ΛJ = Λy * Js + Λ0
+    # Controlling parameters of trust region
+    a = τ * diagmax(Λt, nd); b = 2.0
     #### Compute free energy
-    Cnow = lm_get_squaresum(Λy, rs, ny)
+    fill!(Δμ, 0.0)
+    unsafe_copy!(Ft, Λs)
+    unsafe_copy!(Fb, Λt)
+    Fnow = vi_get_evidence!(Λy, rs, ny, Λ0, Δμ, nd, Ft, Fb)
     #### Iteration
     it = 0
     while it < itmax
         it += 1
         # Damped Gauss-Newton approximation
-        unsafe_copy!(Hf, Hs)
-        λ = a * diagmax(Hf, nd)
+        unsafe_copy!(Ft, Λt)
+        λ = a * diagmax(Ft, nd)
         @simd for i in toN
-            @inbounds Hf[i,i] += λ
+            @inbounds Ft[i,i] += λ
         end
-        cholesky_state = lm_get_cholesky!(Hf)
+        cholesky_state = lm_get_cholesky!(Ft)
         # Levenberg-Marquardt step by 1st order linearization
-        lm_get_gradient!(dμ, ΛJ, rs)
-        lm_get_blastrsv!(dμ, Hf)
+        vi_get_gradient!(dμ, ΛJ, rs, Λ0, Δμ)
+        lm_get_blastrsv!(dμ, Ft)
         # Finite-difference of 2nd order directional derivative
         @simd for i in toN
             @inbounds μt[i] = μs[i] + h * dμ[i]
@@ -122,32 +129,41 @@ function main(μ0::VecI, Λy::Union{VecI, MatI}, τ::Real, h::Real, itmax::Int)
         lm_get_gradient!(rt, rs, Js, dμ, ih1, ih2)
         # Geodesic acceleration step by 2nd order linearization
         lm_get_gradient!(δμ, ΛJ, rt)
-        lm_get_blastrsv!(δμ, Hf)
+        lm_get_blastrsv!(δμ, Ft)
         gratio = 2.0 * nrm2(δμ) / nrm2(dμ)
         gratio > 0.75 && (a *= b; b *= 2.0; continue)
         # (Levenberg-Marquardt velocity) + (Geodesic acceleration)
         BLAS.axpy!(1.0, δμ, dμ) # dμ ← dμ + δμ
         # Compute predicted gain of the least square cost by linear approximation
-        LinApprox = lm_get_squaresum(Hs, dμ, nd) + λ * dot(dμ, dμ, nd)
+        LinApprox = lm_get_squaresum(Λt, dμ, nd) + λ * dot(dμ, dμ, nd)
         # Compute gain ratio
         @simd for i in toN
             @inbounds μt[i] = μs[i] + dμ[i]
         end
         lm_get_residual!(rt, μt, fn)
-        Cnew = lm_get_squaresum(Λy, rt, ny)
+        lm_get_jacobian!(Jt, μt, fn)
+        vi_get_apprhess!(Λb, Λy, Jt, Λ0, ΛJ)
+        @simd for i in toN
+            @inbounds δμ[i] = μt[i] - μ0[i]
+        end
+        unsafe_copy!(Ft, Λt)
+        unsafe_copy!(Fb, Λb)
+        Fnew = vi_get_evidence!(Λy, rt, ny, Λ0, δμ, nd, Ft, Fb)
 
-        Δ = Cnow - Cnew; ρ = Δ / LinApprox
+        Δ = Fnow - Fnew; ρ = Δ / LinApprox
         if ρ > 0.0
-            Cnow = Cnew
+            Fnow = Fnew
             unsafe_copy!(μs, μt)
             ###
             @inbounds push!(x1, μs[1])
             @inbounds push!(x2, μs[2])
             ###
+            unsafe_copy!(Λs, Λt)
             (maximum(δμ) < 1e-15 || Δ < 1e-10) && break # Check localized convergence
-            lm_get_jacobian!(Js, μs, fn)
-            lm_get_apprhess!(Hs, Λy, Js, ΛJ)
             unsafe_copy!(rs, rt)
+            unsafe_copy!(Λt, Λb)
+            unsafe_copy!(Js, Jt)
+            unsafe_copy!(Δμ, δμ)
             a = ρ < 0.9367902323681495 ? a * (1.0 - cubic(2.0 * ρ - 1.0)) : a / 3.0
             b = 2.0
         else
@@ -184,19 +200,27 @@ function main(μ0::VecI, Λy::Union{VecI, MatI}, τ::Real, h::Real, itmax::Int)
     ax1.patch.set_alpha(0.)
     fig.patch.set_alpha(0.)
     fig.set_tight_layout(true)
-    fig.savefig("./BoxBOD by Levenberg-Marquardt Method.pdf", format="pdf", dpi=600, backend="pgf", bbox_inches="tight", pad_inches=0.05)
+    fig.savefig(fname, format="pdf", dpi=600, backend="pgf", bbox_inches="tight", pad_inches=0.05)
     return nothing
 end
 
 function main()
     parμ = [10.0, 5.5]
+    parΛ = zeros(Float64, 2, 2)
     βmat = zeros(Float64, 6, 6)
 
     @simd for i in eachindex(1:6)
         @inbounds βmat[i,i] = 1.0
     end
 
-    main(parμ, βmat, 1e-3, 0.1, 100)
+    for λ in (1e-7, 1e-5, 1e-3, 1e-1, 5e-1, 1e0)
+        @simd for i in eachindex(parμ)
+            @inbounds parΛ[i,i] = λ
+        end
+        fname = @sprintf "./BoxBOD by Variational-Inference Method λ=%.1e.pdf" λ
+        main(fname, parμ, parΛ, βmat, 1e-3, 0.1, 100)
+    end
+
     return nothing
 end
 
